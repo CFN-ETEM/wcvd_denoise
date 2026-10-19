@@ -1,0 +1,131 @@
+# wcvd-denoise
+
+Command-line tool for denoising HRTEM videos with the Weight Centric Video Denoising (WCVD) model from:
+
+Lee, B., Li, M., Yang, J.C. et al. Machine learning pipeline for denoising low signal-to-noise ratio and out-of-distribution transmission electron microscopy datasets. npj Comput Mater (2026). https://doi.org/10.1038/s41524-026-02193-9
+
+The training and test data used in the paper are in the original repository: https://github.com/CFN-ETEM/HRTEM_denoising_model
+
+Questions about this work can be directed to: blee2@bnl.gov
+
+It supports:
+
+- Denoising with the bundled pretrained weights.
+- Self-supervised retraining on a user's own noisy video (no clean data needed).
+- `.npy` arrays, multi-frame TIFF stacks, and folders or patterns of PNG/TIFF frames.
+- Automatic use of an NVIDIA CUDA GPU when one is available, with CPU fallback.
+
+## Installation
+
+Python 3.9 or newer is required. Creating a virtual environment is recommended:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+```
+
+Install the package from GitHub:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install git+https://github.com/CFN-ETEM/wcvd_denoise.git
+```
+
+This installs the command-line tool:
+
+```text
+denoise
+```
+
+If a particular CUDA build of PyTorch is required, install it first by following https://pytorch.org/get-started/locally/, then install this package.
+
+## Quick Start
+
+Download the example video [`examples/au.npy`](examples/au.npy) (three frames of an HRTEM video of gold) and run:
+
+```bash
+denoise --input au.npy --output au_denoised.npy
+```
+
+## Usage
+
+```bash
+denoise --input <input> --output <output> [options]
+```
+
+### Input
+
+`--input` (`-i`) accepts:
+
+| Input | Example |
+|---|---|
+| NumPy array with shape `(Nt, Nx, Ny)` | `-i video.npy` |
+| Multi-frame TIFF stack | `-i video.tif` |
+| Folder of PNG or TIFF frames | `-i frames/` |
+| Pattern matching PNG or TIFF frames | `-i "frames/name_*.png"` |
+
+Frames are ordered by the numbers in their file names, so `name_2.png` comes before `name_10.png`. Color images are converted to grayscale by averaging the color channels. 8-bit, 16-bit, and floating-point images are supported.
+
+At least three frames are required. The model uses three consecutive frames to predict their center frame, so an input with `Nt` frames produces `Nt - 2` output frames. The first and last input frames are not included in the output.
+
+### Output
+
+The type of `--output` (`-o`) is set by its extension:
+
+| Output | Result |
+|---|---|
+| `out.npy` | NumPy array with shape `(Nt - 2, Nx, Ny)` |
+| `out.tif` | Multi-frame float32 TIFF stack |
+| `out_folder/` (no extension) | One image per frame |
+
+When writing to a folder, each output frame is named after its matching input frame. For example, `name_2.png` becomes `name_2_denoised.tif`. Frames are saved as float32 TIFF by default. Add `--format png` to save 16-bit PNG instead; PNG frames are rescaled to 0-65535 using the minimum and maximum of the whole video, so absolute intensities are not preserved.
+
+### Options
+
+| Option | Default | Description |
+|---|---|---|
+| `-w`, `--weights` | bundled weights | Weight file (`.pt`) to use, e.g. from retraining |
+| `--batch-size` | `4` | Three-frame windows per batch. Lower it if you run out of memory |
+| `--device` | `auto` | `auto`, `cpu`, `cuda`, `cuda:1`, ... |
+| `--format` | `tif` | `tif` or `png`, used when `--output` is a folder |
+| `--retrain` | off | Fine-tune the weights on the input video before denoising |
+| `--epochs` | `300` | Retraining epochs |
+| `--lr` | `0.001` | Retraining learning rate (Adam with `ReduceLROnPlateau`) |
+| `--save-weights` | none | Where to save the retrained weights |
+
+Run `denoise --help` for the full list.
+
+## Retraining
+
+For data that differ from what the pretrained model was trained on, retraining fine-tunes the weights on your own noisy video. Clean target data are not required: the blind-spot model learns to predict each center frame from neighboring spatial and temporal information.
+
+```bash
+denoise -i "frames/name_*.tif" -o denoised/ --retrain --save-weights my_weights.pt
+```
+
+This retrains for 300 epochs, saves the weights to `my_weights.pt`, and denoises the video. The saved weights can be reused on other videos:
+
+```bash
+denoise -i "other/name_*.tif" -o other_denoised/ --weights my_weights.pt
+```
+
+Retraining is much faster on a GPU.
+
+## Intensity Scaling
+
+The network has no bias terms, so multiplying the input by a constant multiplies the output by the same constant. Images exported as 8-bit or 16-bit PNG/TIFF can therefore be used without matching the intensity units of the training data. A constant offset (for example, background subtraction or contrast stretching applied on export) is not removed by this property and can change the result. When possible, use raw or linearly scaled frames.
+
+## Python API
+
+The same functions can be used from Python:
+
+```python
+import numpy as np
+from wcvd_denoise import denoise, load_model, retrain, read_video
+
+video, names = read_video(["frames/name_*.png"])   # shape (Nt, Nx, Ny)
+denoised = denoise(video)                         # shape (Nt - 2, Nx, Ny)
+
+model = retrain(video, load_model(), number_of_epochs=300)
+denoised = denoise(video, model)
+```

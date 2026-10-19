@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wcvd-denoise"
+version = "0.1.0"
+description = "Weight Centric Video Denoising (WCVD) for low signal-to-noise HRTEM videos"
+readme = "README.md"
+
+authors = [
+  { name = "Brian Lee", email = "blee2@bnl.gov" },
+]
+
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+]
+
+requires-python = ">=3.9"
+
+dependencies = [
+  "numpy>=1.22",
+  "torch>=2.0",
+  "tifffile>=2021.1",
+  "Pillow>=9.1",
+]
+
+[project.urls]
+Paper = "https://doi.org/10.1038/s41524-026-02193-9"
+"Original repository" = "https://github.com/CFN-ETEM/HRTEM_denoising_model"
+
+[project.scripts]
+denoise = "wcvd_denoise.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["wcvd_denoise*"]
+
+[tool.setuptools.package-data]
+wcvd_denoise = ["weights/*.pt"]
