@@ -32,6 +32,22 @@ def load_model(weights_path=None, device="auto") -> WCVD:
     return model
 
 
+def is_single_frame(video: np.ndarray) -> bool:
+    return video.ndim == 2 or (video.ndim == 3 and video.shape[0] == 1)
+
+
+def repeat_single_frame(video: np.ndarray) -> np.ndarray:
+    """Turn a single image (Nx, Ny) or (1, Nx, Ny) into a three-frame video.
+
+    The model is intended for time-series videos. A single frame is replicated
+    three times so the model can still produce one denoised frame.
+    """
+    video = np.asarray(video)
+    if is_single_frame(video):
+        video = np.repeat(video.reshape(1, *video.shape[-2:]), 3, axis=0)
+    return video
+
+
 def check_video(video: np.ndarray) -> torch.Tensor:
     if video.ndim != 3:
         raise ValueError(
@@ -43,14 +59,18 @@ def check_video(video: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(np.asarray(video, dtype=np.float32))
 
 
-def denoise(video, model=None, batch_size=4, device="auto") -> np.ndarray:
+def denoise(video, model=None, batch_size=4, device="auto"):
     """Denoise a video with shape (Nt, Nx, Ny).
 
-    Three input frames produce one denoised center frame. The output therefore
-    contains Nt - 2 frames and excludes the first and last input frames.
+    Returns two arrays: (lowpass_ml, ml). lowpass_ml is the model output after
+    the low-pass filter, as used in the paper; ml is the model output alone.
+
+    Three input frames produce one denoised center frame. The outputs therefore
+    contain Nt - 2 frames and exclude the first and last input frames.
+    A single frame is replicated three times and gives one output frame.
     """
     device = get_device(device) if isinstance(device, str) else device
-    video = check_video(video)
+    video = check_video(repeat_single_frame(video))
     if model is None:
         model = load_model(device=device)
     model = model.to(device)
@@ -59,7 +79,8 @@ def denoise(video, model=None, batch_size=4, device="auto") -> np.ndarray:
     image_size = (video.shape[1], video.shape[2])
     lowpass = FFTCircularLowPass(Ns=3, img_size=image_size).to(device)
     number_of_windows = video.shape[0] - 2
-    denoised_batches = []
+    lowpass_batches = []
+    ml_batches = []
 
     with torch.inference_mode():
         for start in range(0, number_of_windows, batch_size):
@@ -68,10 +89,13 @@ def denoise(video, model=None, batch_size=4, device="auto") -> np.ndarray:
                 [video[index:index + 3] for index in range(start, stop)]
             )
             windows = windows.unsqueeze(1).to(device)
-            predictions = lowpass(model(windows))
-            denoised_batches.append(predictions[:, 0, 0].cpu())
+            predictions = model(windows)
+            lowpass_batches.append(lowpass(predictions)[:, 0, 0].cpu())
+            ml_batches.append(predictions[:, 0, 0].cpu())
 
-    return torch.cat(denoised_batches, dim=0).numpy()
+    lowpass_ml = torch.cat(lowpass_batches, dim=0).numpy()
+    ml = torch.cat(ml_batches, dim=0).numpy()
+    return lowpass_ml, ml
 
 
 def retrain(
@@ -89,6 +113,10 @@ def retrain(
     neighboring spatial and temporal information.
     """
     device = get_device(device) if isinstance(device, str) else device
+    if is_single_frame(np.asarray(video)):
+        # Replicated neighbors would contain the center frame's own noise, so
+        # the blind-spot training would learn to copy it instead of denoising.
+        raise ValueError("Retraining requires a video with at least three frames.")
     video = check_video(video)
     if model is None:
         model = load_model(device=device)

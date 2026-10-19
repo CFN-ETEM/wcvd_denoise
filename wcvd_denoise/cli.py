@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 
-from .core import denoise, get_device, load_model, retrain
+from .core import denoise, get_device, is_single_frame, load_model, retrain
 from .image_io import read_video, write_video
 
 EXAMPLES = """
@@ -32,12 +32,14 @@ def build_parser():
         "-i", "--input", required=True, nargs="+",
         help="A .npy array (Nt, Nx, Ny), a multi-frame TIFF, a folder of "
              "PNG/TIFF frames, or a pattern such as 'name_*.png'. Frames are "
-             "ordered by the numbers in their file names.",
+             "ordered by the numbers in their file names. A single image is "
+             "replicated 3 times to form a video.",
     )
     parser.add_argument(
         "-o", "--output", required=True,
         help="Output .npy file, .tif/.tiff stack, or a folder for one image "
-             "per frame.",
+             "per frame. Two results are saved, with file names starting with "
+             "lowpass_ml_ (ML + low-pass filter) and ml_ (ML only).",
     )
     parser.add_argument(
         "--format", choices=("tif", "png"), default="tif",
@@ -94,14 +96,21 @@ def main(argv=None):
         video, frame_names = read_video(args.input)
     except (FileNotFoundError, ValueError) as error:
         parser.exit(1, f"denoise: error: {error}\n")
-    if video.ndim != 3 or video.shape[0] < 3:
+    single_frame = is_single_frame(video)
+    if single_frame and args.retrain:
+        parser.exit(
+            1, "denoise: error: --retrain requires a video with at least three frames.\n"
+        )
+    if not single_frame and (video.ndim != 3 or video.shape[0] < 3):
         parser.exit(
             1,
-            "denoise: error: input must be a video of at least three frames "
-            f"with shape (Nt, Nx, Ny), but received {video.shape}.\n",
+            "denoise: error: input must be a single image or a video of at least "
+            f"three frames with shape (Nt, Nx, Ny), but received {video.shape}.\n",
         )
     print(f"Device: {device}")
     print(f"Input shape: {video.shape}")
+    if single_frame:
+        print("Single frame: replicating it 3 times to form a video.")
 
     model = load_model(args.weights, device=device)
 
@@ -122,15 +131,28 @@ def main(argv=None):
             torch.save(model.state_dict(), weights_path)
             print(f"Saved retrained weights to: {weights_path}")
 
-    denoised = denoise(video, model, batch_size=args.batch_size, device=device)
+    lowpass_ml, ml = denoise(video, model, batch_size=args.batch_size, device=device)
+
+    if single_frame:
+        print(f"Output shape: {lowpass_ml.shape}")
+    else:
+        print(f"Output shape: {lowpass_ml.shape} (first and last frames are excluded)")
 
     # Output frame k is the center of input frames k, k+1, k+2.
-    saved = write_video(denoised, args.output, frame_names[1:-1], args.format)
-    print(f"Output shape: {denoised.shape} (first and last frames are excluded)")
-    if len(saved) == 1:
-        print(f"Saved denoised data to: {saved[0]}")
-    else:
-        print(f"Saved {len(saved)} denoised frames to: {Path(args.output)}")
+    output_names = frame_names if single_frame else frame_names[1:-1]
+    outputs = (
+        ("lowpass_ml_", lowpass_ml, "ML denoising + low-pass filter"),
+        ("ml_", ml, "ML denoising only"),
+    )
+    for prefix, denoised, label in outputs:
+        saved = write_video(denoised, args.output, output_names, prefix, args.format)
+        if len(saved) == 1:
+            print(f"Saved {label} to: {saved[0]}")
+        else:
+            print(
+                f"Saved {label} ({len(saved)} frames) to: "
+                f"{Path(args.output) / prefix}*"
+            )
     return 0
 
 

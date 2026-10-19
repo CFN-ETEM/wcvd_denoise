@@ -106,10 +106,9 @@ def read_video(inputs):
         elif suffix in TIFF_SUFFIXES:
             video = read_tiff_stack(path)
         else:
-            raise ValueError(
-                f"{path} is a single image. Provide at least three frames, "
-                "for example with a pattern such as 'name_*.png'."
-            )
+            video = read_image(path)
+        if video.ndim == 2 or len(video) == 1:
+            return video, [path.stem]
         names = [f"{path.stem}_{index:05d}" for index in range(len(video))]
         return video, names
 
@@ -133,23 +132,26 @@ def to_uint16(video: np.ndarray) -> np.ndarray:
     return np.round((video - low) * scale).astype(np.uint16)
 
 
-def write_video(video: np.ndarray, output, frame_names, image_format="tif"):
-    """Save the denoised video.
+def write_video(video: np.ndarray, output, frame_names, prefix, image_format="tif"):
+    """Save the denoised video with prefix added to every file name.
 
-    output ending in .npy      -> NumPy array
+    output ending in .npy      -> NumPy array, e.g. out/<prefix>name.npy
     output ending in .tif/.tiff -> one float32 multi-frame TIFF
-    anything else              -> folder with one image per frame
+    anything else              -> folder with one image per frame,
+                                  e.g. out/<prefix><frame name>.tif
     """
     output = Path(output)
     suffix = output.suffix.lower()
     output.parent.mkdir(parents=True, exist_ok=True)
 
     if suffix == ".npy":
-        np.save(output, video)
-        return [output]
+        path = output.with_name(prefix + output.name)
+        np.save(path, video)
+        return [path]
     if suffix in TIFF_SUFFIXES:
-        tifffile.imwrite(output, video.astype(np.float32))
-        return [output]
+        path = output.with_name(prefix + output.name)
+        tifffile.imwrite(path, video.astype(np.float32))
+        return [path]
 
     output.mkdir(parents=True, exist_ok=True)
     saved = []
@@ -157,10 +159,10 @@ def write_video(video: np.ndarray, output, frame_names, image_format="tif"):
         video = to_uint16(video)
     for frame, name in zip(video, frame_names):
         if image_format == "png":
-            path = output / f"{name}_denoised.png"
+            path = output / f"{prefix}{name}.png"
             Image.fromarray(frame).save(path)
         else:
-            path = output / f"{name}_denoised.tif"
+            path = output / f"{prefix}{name}.tif"
             tifffile.imwrite(path, frame.astype(np.float32))
         saved.append(path)
     return saved

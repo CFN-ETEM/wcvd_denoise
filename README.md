@@ -47,6 +47,8 @@ Download the example video [`examples/au.npy`](examples/au.npy) (three frames of
 denoise --input au.npy --output au_denoised.npy
 ```
 
+This saves two results, `lowpass_ml_au_denoised.npy` and `ml_au_denoised.npy` (see [Two Outputs](#two-outputs-with-and-without-the-low-pass-filter)).
+
 ## Usage
 
 ```bash
@@ -66,19 +68,30 @@ denoise --input <input> --output <output> [options]
 
 Frames are ordered by the numbers in their file names, so `name_2.png` comes before `name_10.png`. Color images are converted to grayscale by averaging the color channels. 8-bit, 16-bit, and floating-point images are supported.
 
-At least three frames are required. The model uses three consecutive frames to predict their center frame, so an input with `Nt` frames produces `Nt - 2` output frames. The first and last input frames are not included in the output.
+The model uses three consecutive frames to predict their center frame, so an input with `Nt` frames produces `Nt - 2` output frames. The first and last input frames are not included in the output.
+
+The original model is intended to be used for time-series videos. If user supplies single frame image, the model replicates the image 3 times to preprocess it into a video to make the final output. For example, an input of shape `(512, 512)` or `(1, 512, 512)` gives an output of shape `(1, 512, 512)`. Retraining requires a video with at least three frames. Inputs with exactly two frames are not supported.
 
 ### Output
 
-The type of `--output` (`-o`) is set by its extension:
+Every run saves two results, with file names starting with `lowpass_ml_` and `ml_` (see below). The type of `--output` (`-o`) is set by its extension:
 
 | Output | Result |
 |---|---|
-| `out.npy` | NumPy array with shape `(Nt - 2, Nx, Ny)` |
-| `out.tif` | Multi-frame float32 TIFF stack |
-| `out_folder/` (no extension) | One image per frame |
+| `out.npy` | `lowpass_ml_out.npy` and `ml_out.npy`, NumPy arrays with shape `(Nt - 2, Nx, Ny)` |
+| `out.tif` | `lowpass_ml_out.tif` and `ml_out.tif`, multi-frame float32 TIFF stacks |
+| `out_folder/` (no extension) | One image per frame for each result |
 
-When writing to a folder, each output frame is named after its matching input frame. For example, `name_2.png` becomes `name_2_denoised.tif`. Frames are saved as float32 TIFF by default. Add `--format png` to save 16-bit PNG instead; PNG frames are rescaled to 0-65535 using the minimum and maximum of the whole video, so absolute intensities are not preserved.
+When writing to a folder, each output frame is named after its matching input frame. For example, `name_2.png` becomes `out_folder/lowpass_ml_name_2.tif` and `out_folder/ml_name_2.tif`. Frames are saved as float32 TIFF by default. Add `--format png` to save 16-bit PNG instead; PNG frames are rescaled to 0-65535 using the minimum and maximum of the whole video, so absolute intensities are not preserved.
+
+### Two Outputs: With and Without the Low-Pass Filter
+
+After the ML model, a circular low-pass filter in Fourier space removes spatial frequencies above a fixed cutoff (detail finer than about 6 pixels), as in the paper. Both versions are saved so you can compare them:
+
+- `lowpass_ml_*`: ML denoising followed by the low-pass filter. This is the result reported in the paper and usually the cleanest.
+- `ml_*`: ML denoising only.
+
+The low-pass filter can hurt when real structure, such as a small lattice spacing, is close to or finer than the cutoff. In that case the `ml_*` result keeps that detail. However, the model was trained with the low-pass filter applied to its output, so frequencies above the cutoff were not constrained during training. The `ml_*` result can therefore contain some high-frequency noise or artifacts; this does not by itself mean the denoising failed. Check both results, and their Fourier transforms, before deciding which to use.
 
 ### Options
 
@@ -124,8 +137,8 @@ import numpy as np
 from wcvd_denoise import denoise, load_model, retrain, read_video
 
 video, names = read_video(["frames/name_*.png"])   # shape (Nt, Nx, Ny)
-denoised = denoise(video)                         # shape (Nt - 2, Nx, Ny)
+lowpass_ml, ml = denoise(video)                   # each (Nt - 2, Nx, Ny)
 
 model = retrain(video, load_model(), number_of_epochs=300)
-denoised = denoise(video, model)
+lowpass_ml, ml = denoise(video, model)
 ```
